@@ -82,7 +82,7 @@ R4 = re.compile(r'tag=(.*) value=(.*)')
 R5 = re.compile(r'SUB_SPELL_START - SpellPrefabGUID=(.*) Source=(\d*) TargetCount=(\d*)')
 R6 = re.compile(r'Targets\[0] = \[entityName=(.*) id=(\d*) zone=(.*) zonePos=(\d*) cardId=(.*) player=(\d)]')
 R7 = re.compile(r'Source = \[entityName=(.*) id=(\d*) zone=(.*) zonePos=(\d*) cardId=(.*) player=(\d)]')
-label = Variable
+label = None
 
 
 class MainWindow(Tk):
@@ -114,13 +114,13 @@ class MainWindow(Tk):
         self.Menu.add_cascade(label='用技能判断随从是否对应当前地标的地标，星星特性说明猜对，每回合一次')
         self.Menu.add_cascade(label='回合结束后的烟火数量表示目前放对位置的总数')
         self.Menu.add_cascade(label='回合结束后你失去一点生命，你只有十个回合')
-        self.Menu.add_cascade(label='辅助工具不显示需要计算才能得出的信息')
+        self.Menu.add_cascade(label='第2版开始，辅助工具显示部分计算可得信息')
         self.Menu.add_separator()
         self.Menu.add_cascade(label='字体大小 +', command=self.font_plus)
         self.Menu.add_cascade(label='字体大小 -', command=self.font_minus)
         self.Menu.add_cascade(label='结束后可打开日志配置路径手动删除log.config', command=self.pop_dir)
         self.Menu.add_separator()
-        self.Menu.add_cascade(label='第1版')
+        self.Menu.add_cascade(label='第2版')
         self.bind('<Button-3>', self.popupmenu)
         self.logviewer = self.LogViewer(HS_LOG_PATH)
         self.mainloop()
@@ -167,14 +167,15 @@ class MainWindow(Tk):
             self.file = None
             self.last_size = 0
             self.pos = 0
-            locations = {a: [0, [0, 0]] for a in range(20, 30)}
-            minions = {a: [0, [0, 0, 0, 0]] for a in range(10, 20)}
+            locations = {a: [0, [0, 0], ''] for a in range(20, 30)}
+            minions = {a: [0, [0, 0, 0, 0], ''] for a in range(10, 20)}
             self.entities = {**locations, **minions}
             self.fireworks = 0
             self.fireworks_updated = False
-            self.guess = []
-            self.guess_log = []
             self.data = [[0] * 10 for _ in range(6)]
+            self.score = {(location, minion): '0' for location in range(20, 30) for minion in range(10, 20)}
+            # 0=初始 1=错 2=错但已经知道对 3=对
+            self.full_answers = []
             self.output = ''
             self.updated = False
 
@@ -215,7 +216,6 @@ class MainWindow(Tk):
                         self.cache_handle(cache_type, cache)
                     if self.updated:
                         self.cal_output()
-                        self.fireworks_updated = False
             else:
                 pass
                 # print('文件消失，实体摆烂', self.path)
@@ -232,12 +232,19 @@ class MainWindow(Tk):
             for j in range(4):
                 for i in range(10):
                     self.data[j + 2][i] = minions[i][1][j]
-            self.output = f'上次猜对{self.fireworks}个位置\n'
+            self.output = f'上次猜对{self.fireworks}个位置\n\n'
             for i in range(6):
                 self.output += ''.join([f'{self.data[i][j] if self.data[i][j] else "?":>4}' for j in range(10)]) + (
                     '\n\n' if i == 1 else '\n')
-            for line in self.guess_log:
-                self.output += '\n' + line
+            guesses_record = [en[0] for en in self.score.items() if en[1] == '3']
+            for record in guesses_record:
+                self.output += f'\n{self.entities[record[1]][2]}【在】' \
+                               f'{self.entities[record[0]][2]}（{self.entities[record[0]][0]}）'
+            guesses_record = [en[0] for en in self.score.items() if en[1] == '1']
+            self.output += '\n'
+            for record in guesses_record:
+                self.output += f'\n{self.entities[record[1]][2]}【不在】' \
+                               f'{self.entities[record[0]][2]}（{self.entities[record[0]][0]}）'
 
         def cache_handle(self, _type, cache):
             last_id = 0
@@ -246,8 +253,41 @@ class MainWindow(Tk):
                 for log in cache:
                     line = log[1]
                     if line.startswith('TAG_CHANGE'):
+                        if self.fireworks_updated:
+                            minions = [en for en in self.entities.items() if en[0] < 20]
+                            _new = (set((19 + i, [minion[0] for minion in minions if minion[1][0] == i][0]) for i in range(1, 11)), self.fireworks)
+                            if len(self.full_answers) > 1:
+                                _last = self.full_answers[-1]
+                                _add = _new[0] - _last[0]
+                                if len(_add) == 2:
+                                    _lost = _last[0] - _new[0]
+                                    if len(_lost) == 2:
+                                        _cha = _new[1] - _last[1]
+                                        if _cha == 2:
+                                            for pair in _add:
+                                                for t in range(20, 30):
+                                                    self.score[(t, pair[1])] = '2'
+                                                for t in range(10, 20):
+                                                    self.score[(pair[0], t)] = '2'
+                                                self.score[pair] = '3'
+                                        elif _cha == -2:
+                                            for pair in _lost:
+                                                for t in range(20, 30):
+                                                    self.score[(t, pair[1])] = '2'
+                                                for t in range(10, 20):
+                                                    self.score[(pair[0], t)] = '2'
+                                                self.score[pair] = '3'
+                                        elif _cha == 0:
+                                            for pair in _add | _lost:
+                                                if self.score[pair] == '0':
+                                                    self.score[pair] = '1'
+                                        else:
+                                            pass
+                            self.full_answers.append(_new)
+                            self.fireworks_updated = False
                         result = R1.match(line)
                         if result:
+                            _name = result.group(1)
                             _id = int(result.group(2))
                             _pos = int(result.group(3))
                             _tag = result.group(6)
@@ -255,6 +295,7 @@ class MainWindow(Tk):
                             if _tag == 'ZONE_POSITION':
                                 if 10 <= _id < 30:
                                     self.entities[_id][0] = int(_value)
+                                    self.entities[_id][2] = _name
                                     self.updated = True
                             elif 'CARDTEXT_ENTITY_' in _tag:
                                 _tag_num = int(_tag[-1])
@@ -264,14 +305,17 @@ class MainWindow(Tk):
                             self.cal_output()
                             # print(self.output)
                             label['text'] = self.output
-                            self.guess = []
-                            self.guess_log = []
-                            self.fireworks = 0
+                            self.full_answers = []
+                            self.score = {(location, minion): '0' for location in range(20, 30) for minion in
+                                          range(10, 20)}
                             self.updated = False
                     else:
                         result = R2.match(line)
                         if result:
                             last_id = int(result.group(2))
+                            if 10 <= last_id < 30:
+                                _name = result.group(1)
+                                self.entities[last_id][2] = _name
                         result = R3.match(line)
                         if result:
                             last_id = int(result.group(1))
@@ -304,12 +348,21 @@ class MainWindow(Tk):
                         _id = int(result.group(2))
                         _pos = int(result.group(4))
                         answer = True if sub_spell_type.startswith('LOOTFX_Confuse_Targeted_ImpactOnly_FX') else False
-                        self.guess.append((_id, _pos, answer))
-                        self.guess_log.append(f'{"√" if answer else "×"} {name}【{"" if answer else "不"}在】第{_pos}格')
+                        loc_id = [en[0] for en in self.entities.items() if en[1][0] == _pos][0]
+                        if answer:
+                            for t in range(20, 30):
+                                self.score[(t, _id)] = '2'
+                            for t in range(10, 20):
+                                self.score[(loc_id, t)] = '2'
+                            self.score[(loc_id, _id)] = '3'
+                        else:
+                            if self.score[(loc_id, _id)] == '0':
+                                self.score[(loc_id, _id)] = '1'
                         self.updated = True
                     result = R7.match(line)
                     if result and sub_spell_type.startswith('ReuseFX_Generic_AE_Flare_Super'):
                         self.updated = True
+                        self.fireworks_updated = True
                         self.fireworks += 1
                     # 'ReuseFX_Generic_AE_Flare_Super:d852894a04f4afd45b05f0e21cdd6524'  # 烟花
                     # 'ReuseFX_Mercenaries_SlowDown_Impact_Super:24c7d126f2e2c9f47bf6b2d375ad49c9' # 错
@@ -329,7 +382,7 @@ class MainWindow(Tk):
                     self.logviewer.updated = False
                 await asyncio.sleep(0.005)
             except Exception as ee:
-                print(ee)
+                print(ee, ee.args)
 
 
 if __name__ == '__main__':
